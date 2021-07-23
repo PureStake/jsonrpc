@@ -4,13 +4,14 @@ use std::collections::{
 };
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
+use std::time::Instant;
 
 use futures::{self, future, Future};
 use serde_json;
 
 use crate::calls::{Metadata, RemoteProcedure, RpcMethod, RpcMethodSimple, RpcNotification, RpcNotificationSimple};
 use crate::middleware::{self, Middleware};
-use crate::types::{Call, Output, Request, Response};
+use crate::types::{Id, Call, Output, Request, Response};
 use crate::types::{Error, ErrorCode, Version};
 
 /// A type representing middleware or RPC response before serialization.
@@ -193,12 +194,16 @@ impl<T: Metadata, S: Middleware<T>> MetaIoHandler<T, S> {
 	/// Handle given request asynchronously.
 	pub fn handle_request(&self, request: &str, meta: T) -> FutureResult<S::Future, S::CallFuture> {
 		use self::future::Either::{A, B};
+		let start = Instant::now();
 		fn as_string(response: Option<Response>) -> Option<String> {
-			let res = response.map(write_response);
-			debug!(target: "rpc", "Response: {}.", match res {
-				Some(ref res) => res,
-				None => "None",
-			});
+			let res = response.as_ref().map(write_response);
+			let len = if let Some(data) = res.as_ref() {data.len()} else {0};
+			if let Some(Response::Single(response)) = response {
+				match response {
+					Output::Success(success) => debug!(target: "rpc", "Response [id: {:?} - {} bytes]: success", if let Id::Num(id) = success.id { id } else { 0 } ,len),
+					Output::Failure(failure) => debug!(target: "rpc", "Response [id: {:?} - {} bytes]: {}", if let Id::Num(id) = failure.id { id } else { 0 } ,len, failure.error),
+				}
+			};
 			res
 		}
 
@@ -211,7 +216,6 @@ impl<T: Metadata, S: Middleware<T>> MetaIoHandler<T, S> {
 			)))),
 			Ok(request) => B(self.handle_rpc_request(request, meta)),
 		};
-
 		result.map(as_string)
 	}
 
@@ -466,9 +470,9 @@ fn read_request(request_str: &str) -> Result<Request, Error> {
 	crate::serde_from_str(request_str).map_err(|_| Error::new(ErrorCode::ParseError))
 }
 
-fn write_response(response: Response) -> String {
+fn write_response(response: &Response) -> String {
 	// this should never fail
-	serde_json::to_string(&response).unwrap()
+	serde_json::to_string(response).unwrap()
 }
 
 #[cfg(test)]
